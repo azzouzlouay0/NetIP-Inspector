@@ -13,6 +13,27 @@ class CLI:
         "0. Exit",
     ]
 
+    LABELS = {
+        "ip": "IP",
+        "isp": "ISP",
+        "cidr": "CIDR",
+        "ipv4": "IPv4",
+        "ipv6": "IPv6",
+        "mac": "MAC",
+    }
+
+    @classmethod
+    def _label(cls, key):
+        key = str(key)
+        if key.lower() in cls.LABELS:
+            return cls.LABELS[key.lower()]
+        return key.replace("_", " ").title()
+
+    def _show_fields(self, title, data):
+        print(f"\n=== {title} ===")
+        for key, value in data.items():
+            print(f"{self._label(key)}: {value}")
+
     def _build_menu(self):
         line = "=" * self.WIDTH
 
@@ -43,21 +64,13 @@ class CLI:
         )
 
     def show_location(self, data):
-        print("\n=== IP GEOLOCATION ===")
-        for key, value in data.items():
-            print(f"{key.replace('_', ' ').title()}: {value}")
+        self._show_fields("IP GEOLOCATION", data)
 
     def show_subnet(self, data):
-        print("\n=== SUBNET INFORMATION ===")
-
-        for key, value in data.items():
-            print(f"{key.replace('_', ' ').title()}: {value}")
+        self._show_fields("SUBNET INFORMATION", data)
 
     def show_local_network(self, data):
-        print("\n=== LOCAL NETWORK ===")
-
-        for key, value in data.items():
-            print(f"{key.replace('_', ' ').title()}: {value}")
+        self._show_fields("LOCAL NETWORK", data)
 
     def show_ports(self, ports):
         print("\n=== OPEN TCP PORTS ===")
@@ -71,3 +84,24 @@ class CLI:
 
     def show_message(self, message):
         print(message)
+
+    def show_report(self, report):
+        print("\n" + "=" * self.WIDTH)
+        print("FULL NETWORK REPORT".center(self.WIDTH))
+        print("=" * self.WIDTH)
+
+        for key in ("ipv4", "ipv6"):
+            if report.get(key) is not None:
+                self.show_ip(report[key])
+
+        if report.get("location"):
+            self.show_location(report["location"])
+
+        for network in report.get("networks") or []:
+            self.show_local_network(network)
+
+        if report.get("ports") is not None:
+            self.show_ports(report["ports"])
+
+        for error in report.get("errors") or []:
+            self.show_error(error)
