@@ -1,10 +1,11 @@
 import unittest
+from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import requests
 
 from src.ip_address_info import IPAddressInfo
-from src.ip_api_client import IPApiClient
+from src.ip_api_client import IPApiClient, IPApiError
 
 
 def fake_session(payload=None, error=None):
@@ -16,6 +17,13 @@ def fake_session(payload=None, error=None):
     session = MagicMock()
     session.get.return_value = response
     return session
+
+
+def http_error(status_code):
+    return requests.HTTPError(
+        f"{status_code} error",
+        response=SimpleNamespace(status_code=status_code),
+    )
 
 
 class TestPublicIP(unittest.TestCase):
@@ -45,38 +53,81 @@ class TestPublicIP(unittest.TestCase):
             IPApiClient.IPV4_URL, timeout=2.0
         )
 
+    def test_api_error_is_an_exception(self):
+        self.assertTrue(issubclass(IPApiError, Exception))
+
     def test_missing_ip_key_raises(self):
         client = IPApiClient(session=fake_session({"hello": "world"}))
-        with self.assertRaises(ValueError):
+        with self.assertRaisesRegex(IPApiError, "missing IP address"):
+            client.get_ipv4()
+
+    def test_ip_that_is_not_a_string_raises(self):
+        client = IPApiClient(session=fake_session({"ip": 12345}))
+        with self.assertRaisesRegex(IPApiError, "missing IP address"):
             client.get_ipv4()
 
     def test_non_dict_response_raises(self):
         client = IPApiClient(session=fake_session(["8.8.8.8"]))
-        with self.assertRaises(ValueError):
+        with self.assertRaisesRegex(IPApiError, "invalid JSON response"):
             client.get_ipv4()
 
     def test_invalid_ip_in_response_raises(self):
         client = IPApiClient(session=fake_session({"ip": "not-an-ip"}))
-        with self.assertRaises(ValueError):
+        with self.assertRaisesRegex(IPApiError, "invalid IP address"):
             client.get_ipv4()
 
-    def test_http_error_is_propagated(self):
-        session = fake_session(
-            {"ip": "8.8.8.8"}, error=requests.HTTPError("500")
-        )
-        with self.assertRaises(requests.HTTPError):
+    def test_ipv6_returned_by_ipv4_endpoint_raises(self):
+        client = IPApiClient(session=fake_session({"ip": "2001:db8::1"}))
+        with self.assertRaisesRegex(IPApiError, "incorrect IP version"):
+            client.get_ipv4()
+
+    def test_ipv4_returned_by_ipv6_endpoint_raises(self):
+        client = IPApiClient(session=fake_session({"ip": "8.8.8.8"}))
+        with self.assertRaisesRegex(IPApiError, "incorrect IP version"):
+            client.get_ipv6()
+
+    def test_http_error_becomes_api_error_with_status(self):
+        session = fake_session({"ip": "8.8.8.8"}, error=http_error(500))
+        with self.assertRaisesRegex(IPApiError, "HTTP error 500"):
             IPApiClient(session=session).get_ipv4()
 
-    def test_network_failure_is_propagated(self):
+    def test_network_failure_becomes_api_error(self):
         session = MagicMock()
         session.get.side_effect = requests.ConnectionError("offline")
-        with self.assertRaises(requests.ConnectionError):
+        with self.assertRaisesRegex(IPApiError, "network connection failed"):
             IPApiClient(session=session).get_ipv4()
 
-    def test_timeout_is_propagated(self):
+    def test_timeout_becomes_api_error(self):
         session = MagicMock()
         session.get.side_effect = requests.Timeout("too slow")
-        with self.assertRaises(requests.Timeout):
+        with self.assertRaisesRegex(IPApiError, "timed out"):
+            IPApiClient(session=session).get_ipv6()
+
+    def test_invalid_json_becomes_api_error(self):
+        response = MagicMock()
+        response.json.side_effect = ValueError("not json")
+        session = MagicMock()
+        session.get.return_value = response
+        with self.assertRaisesRegex(IPApiError, "invalid response"):
+            IPApiClient(session=session).get_ipv4()
+
+    def test_other_request_errors_become_api_error(self):
+        session = MagicMock()
+        session.get.side_effect = requests.RequestException("weird")
+        with self.assertRaises(IPApiError):
+            IPApiClient(session=session).get_ipv4()
+
+    def test_error_keeps_original_cause(self):
+        session = MagicMock()
+        session.get.side_effect = requests.Timeout("too slow")
+        with self.assertRaises(IPApiError) as ctx:
+            IPApiClient(session=session).get_ipv4()
+        self.assertIsInstance(ctx.exception.__cause__, requests.Timeout)
+
+    def test_error_message_names_the_action(self):
+        session = MagicMock()
+        session.get.side_effect = requests.Timeout("too slow")
+        with self.assertRaisesRegex(IPApiError, "retrieve IPv6"):
             IPApiClient(session=session).get_ipv6()
 
 
@@ -117,6 +168,12 @@ class TestLocation(unittest.TestCase):
         self.assertEqual(data["ip"], "8.8.8.8")
         self.assertEqual(session.get.call_count, 2)
 
+    def test_location_without_ip_propagates_ipv4_failure(self):
+        session = MagicMock()
+        session.get.side_effect = requests.ConnectionError("offline")
+        with self.assertRaises(IPApiError):
+            IPApiClient(session=session).get_location()
+
     def test_missing_fields_default_to_unknown(self):
         session = fake_session({"success": True, "ip": "8.8.8.8"})
         data = IPApiClient(session=session).get_location("8.8.8.8")
@@ -135,25 +192,29 @@ class TestLocation(unittest.TestCase):
 
     def test_failed_lookup_raises(self):
         session = fake_session({"success": False, "message": "Invalid IP"})
-        with self.assertRaises(ValueError):
+        with self.assertRaisesRegex(IPApiError, "lookup failed"):
             IPApiClient(session=session).get_location("8.8.8.8")
 
     def test_non_dict_location_response_raises(self):
         session = fake_session("oops")
-        with self.assertRaises(ValueError):
+        with self.assertRaisesRegex(IPApiError, "invalid JSON response"):
             IPApiClient(session=session).get_location("8.8.8.8")
 
     def test_invalid_ip_argument_raises_before_request(self):
         session = MagicMock()
-        with self.assertRaises(ValueError):
+        with self.assertRaisesRegex(IPApiError, "Invalid IP address"):
             IPApiClient(session=session).get_location("bad-ip")
         session.get.assert_not_called()
 
-    def test_http_error_on_location_is_propagated(self):
-        session = fake_session(
-            dict(self.PAYLOAD), error=requests.HTTPError("429")
-        )
-        with self.assertRaises(requests.HTTPError):
+    def test_http_error_on_location_becomes_api_error(self):
+        session = fake_session(dict(self.PAYLOAD), error=http_error(429))
+        with self.assertRaisesRegex(IPApiError, "HTTP error 429"):
+            IPApiClient(session=session).get_location("8.8.8.8")
+
+    def test_timeout_on_location_becomes_api_error(self):
+        session = MagicMock()
+        session.get.side_effect = requests.Timeout("slow")
+        with self.assertRaisesRegex(IPApiError, "look up location"):
             IPApiClient(session=session).get_location("8.8.8.8")
 
 
