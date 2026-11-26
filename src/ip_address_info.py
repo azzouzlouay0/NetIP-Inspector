@@ -1,11 +1,22 @@
+from dataclasses import dataclass
 from ipaddress import ip_address, ip_interface
 
 
+@dataclass(frozen=True)
 class IPAddressInfo:
-    def __init__(self, address):
-        parsed = ip_address(address)
-        self.address = str(parsed)
-        self.version = parsed.version
+    address: str
+
+    def __post_init__(self):
+        parsed = ip_address(self.address)
+        object.__setattr__(self, "address", str(parsed))
+
+    @property
+    def version(self):
+        return ip_address(self.address).version
+
+    @property
+    def is_global(self):
+        return ip_address(self.address).is_global
 
     def __str__(self):
         return f"IPv{self.version}: {self.address}"
