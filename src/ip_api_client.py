@@ -1,3 +1,4 @@
+
 import requests
 
 from .ip_address_info import IPAddressInfo
@@ -25,23 +26,38 @@ class IPApiClient:
             response = self._session.get(url, timeout=self._timeout)
             response.raise_for_status()
             payload = response.json()
+
         except requests.Timeout as exc:
-            raise IPApiError(f"Unable to {action}: request timed out") from exc
+            raise IPApiError(
+                f"Unable to {action}: request timed out"
+            ) from exc
+
         except requests.ConnectionError as exc:
             raise IPApiError(
                 f"Unable to {action}: network connection failed"
             ) from exc
+
         except requests.HTTPError as exc:
+            # Handle HTTP errors even when no response is attached.
+            status = (
+                exc.response.status_code
+                if exc.response is not None
+                else "unknown"
+            )
             raise IPApiError(
-                f"Unable to {action}: HTTP error {exc.response.status_code}"
+                f"Unable to {action}: HTTP error {status}"
             ) from exc
+
         except (requests.RequestException, ValueError) as exc:
             raise IPApiError(
                 f"Unable to {action}: invalid response ({exc})"
             ) from exc
 
         if not isinstance(payload, dict):
-            raise IPApiError(f"Unable to {action}: invalid JSON response")
+            raise IPApiError(
+                f"Unable to {action}: invalid JSON response"
+            )
+
         return payload
 
     def _fetch(self, url, expected_version):
@@ -49,16 +65,23 @@ class IPApiClient:
         payload = self._get_json(url, action)
 
         raw_ip = payload.get("ip")
+
         if not isinstance(raw_ip, str):
-            raise IPApiError(f"Unable to {action}: missing IP address")
+            raise IPApiError(
+                f"Unable to {action}: missing IP address"
+            )
 
         try:
             info = IPAddressInfo(raw_ip)
         except ValueError as exc:
-            raise IPApiError(f"Unable to {action}: invalid IP address") from exc
+            raise IPApiError(
+                f"Unable to {action}: invalid IP address"
+            ) from exc
 
         if info.version != expected_version:
-            raise IPApiError(f"Unable to {action}: incorrect IP version")
+            raise IPApiError(
+                f"Unable to {action}: incorrect IP version"
+            )
 
         return info
 
@@ -75,16 +98,25 @@ class IPApiClient:
         try:
             parsed = IPAddressInfo(ip)
         except ValueError as exc:
-            raise IPApiError(f"Invalid IP address: {ip!r}") from exc
+            raise IPApiError(
+                f"Invalid IP address: {ip!r}"
+            ) from exc
 
         data = self._get_json(
-            self.LOCATION_URL + parsed.address, "look up location"
+            self.LOCATION_URL + parsed.address,
+            "look up location"
         )
 
         if not data.get("success"):
-            raise IPApiError("Unable to look up location: lookup failed")
+            raise IPApiError(
+                "Unable to look up location: lookup failed"
+            )
 
-        connection = data.get("connection") or {}
+        # Make sure connection is a dictionary before using .get().
+        connection = data.get("connection")
+
+        if not isinstance(connection, dict):
+            connection = {}
 
         return {
             "ip": data.get("ip", parsed.address),
